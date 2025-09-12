@@ -1,0 +1,38 @@
+model:
+  d_model: 256
+  n_heads: 4
+  n_layers: 4
+  d_ff: 1024
+  attn:
+    kind: hybrid_alt     # 线性/滑窗交替
+    phi: relu
+    sw_window: 128
+    mix_weights: [0.6, 0.4]
+  neuron:
+    type: lif_sint
+    tau: 0.5             # 膜电位衰减 α
+    theta_init: 1.0      # 初始阈值
+    theta_learnable: true
+    ste_tau: 1.0         # 替代梯度温度，训练可退火到 0.5
+  rope_base: 1000000      # 便于长序列扩展
+train:
+  seq_len: 2048
+  micro_batch_size: 2
+  global_batch_size: 8
+  lr: 3.0e-4
+  warmup_steps: 200
+  max_steps: 1000
+  weight_decay: 0.01
+  grad_clip: 1.0
+  eval_interval: 200
+  save_interval: 500
+data:
+  dataset: wikitext       # wikitext | pile (示例)
+  subset: wikitext-2-raw-v1
+  tokenizer: gpt2
+  text_column: text
+  streaming: true
+runtime:
+  device: auto            # auto | cpu | cuda
+  dtype: bf16             # cpu 下自动回落 fp32
+  seed: 42
