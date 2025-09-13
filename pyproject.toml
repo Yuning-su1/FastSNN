@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fastsnn"
+version = "0.0.1"
+description = "FastSNN: a developer-friendly SDK for Spiking Neural Networks"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name="FastSNN Devs"}]
+dependencies = [
+    "torch",
+    "einops",
+    "typer",
+    "transformers",
+    "datasets",
+    "fastapi",
+    "uvicorn",
+    "matplotlib"
+]
+
+[tool.setuptools]
+packages = ["fastsnn"]
+include-package-data = true

@@ -1,63 +1,138 @@
-# FastSNN
+# FastSNN — Build • Convert • Run (One‑Click SNN SDK)
 
-FastSNN is a developer-friendly SDK for building, training, and deploying **Spiking Neural Network (SNN) models**.  
-Inspired by the algorithms introduced by BICLab’s *SpikingBrain* project, FastSNN provides a simple, consistent interface—bringing SNN development closer to the usability of mainstream deep learning frameworks.
+> **TL;DR**: `pip install -e .` → `python oneclick.py`  
+> 即刻跑通：**线性/滑窗/混合注意力 SNN 语言模型** + **ANN→SNN 转换 Demo** + **最小训练闭环**。
 
-## ✨ Key Features
-- **One-line SNN building and training**  
-  Create, train, or convert from ANN to SNN with concise APIs or CLI commands.
+---
 
-- **Unified SNN file format (.snn)**  
-  Standardized model packaging for cross-platform deployment and long-term storage.
+## ✨ 核心卖点（真实可跑）
 
-- **End-to-end workflow coverage**  
-  From model definition, training, context extension, evaluation, to deployment—all in one toolkit.
+- **一键跑通**：`python oneclick.py` 自动完成前向 Smoke Test、10 步训练、以及 **ANN→SNN** 转换演示。
+- **ANN→SNN 转换（最小可用）**：`fastsnn.convert.ann2snn.convert_ann_to_snn(model)`  
+  将 `ReLU/GELU/SiLU` 替换为**自适应阈值 sINT 神经元**，`Linear` 自动适配 `[B,T,D]`。
+- **三种注意力**：线性（O(T) 状态递推）、滑窗（SWA 局部因果）、混合（Linear+SWA，可选 Softmax）。
+- **SpikeTensor 抽象**：统一 `dense/count/event` 表达；训练期 `count` 代理，推理期可扩展事件驱动。
+- **最小训练器**：`Trainer.fit()`，能在 CPU 上快速验证端到端。
 
-- **SpikeTensor abstraction**  
-  A core data structure unifying dense activations, spike counts (sINT), and event-based streams.  
-  Built on the `Coder → NeuronCell` pipeline, it ensures ANN-like interfaces while retaining SNN semantics.
+> 与论文对齐点：训练期**单步 sINT**（自适应阈值），推理期**时间展开**；线性注意力以核特征 + 递推状态实现；滑窗注意力使用局部因果掩码；混合注意力在层间/层内组合。
 
-- **SpikeScope visualization**  
-  A built-in tool for raster plots, sparsity curves, membrane potential traces, and throughput profiling.  
-  Designed to make SNN evaluation interpretable and reproducible.
+---
 
-## 🚀 Quick Example
+## 📦 安装
+
+```bash
+pip install -e .
+```
+
+> 依赖：`torch`, `einops`, `pyyaml`（`setup.py` 已声明）
+
+---
+
+## ⚡️ 1 行 ANN→SNN 转换
+
 ```python
-from fastsnn import FastSNN
+from fastsnn.convert.ann2snn import convert_ann_to_snn, TinyANN
+ann = TinyANN(in_dim=128, hidden=256, out_dim=10)
+snn = convert_ann_to_snn(ann, d_model_fallback=128)
+```
 
-# Build a tiny SNN model
-model = FastSNN.build(arch="snn-tiny", d_model=256, n_layers=4, n_heads=4)
+- `ReLU/GELU/SiLU` → 自适应阈值 sINT（训练期将时间维度折叠为“放电计数”并用 STE 回传）
+- `Linear` → 自动包装为支持 `[B,T,D]` 的层（时序批展平再还原）
+- 其他模块 → 保持不变（安全回退），便于你逐步扩展
 
-# Train on WikiText
-trainer = FastSNN.fit(model, dataset="wikitext/wikitext-2-raw-v1", seq_len=2048, max_steps=1000)
+> 温馨提示：这是**最小可用演示**，目的是“先通一遍”。你可以在此基础上替换更复杂的神经元/门控/量化策略。
 
-# Extend context length (2k → 8k)
-FastSNN.extend_context(model, trainer, new_seq_len=8192)
+---
 
-# Generate visualization report
-FastSNN.scope(model).report("runs/exp1")
+## ▶️ 一键跑通
 
-# Export and serve
-FastSNN.export(model, "artifacts/my_model.snn")
-FastSNN.serve("artifacts/my_model.snn", port=8000)
-````
+```bash
+python oneclick.py
+```
 
-## 📂 File Structure
+它将依次执行：
+1. **安装**（可跳过）：`pip install -e .`
+2. **前向 Smoke Test**：`python -m fastsnn.cli.main --attn hybrid_alt`
+3. **最小训练**：`python tests/test_train.py`
+4. **ANN→SNN 转换 Demo**：调用 `convert_ann_to_snn` 并打印张量尺寸
+
+---
+
+## 🧱 目录
 
 ```
 fastsnn/
-  core/         # Shared abstractions (SpikeTensor, Config, Registry)
-  neurons/      # LIF-sINT, AdEx-sINT, surrogate gradients
-  attention/    # Linear, Sliding Window, Hybrid
-  ffn/          # Pulse FFN, MoE FFN
-  builder/      # Model constructors, ANN→SNN converters
-  trainer/      # Training loop, context extension, schedulers
-  data/         # Dataset adapters, coders, streamers
-  scope/        # SpikeScope visualization utilities
-  deploy/       # Export, .snn bundling, REST serving
-  cli/          # FastSNN CLI entrypoints
+  attention/  {linear.py, sliding_window.py, hybrid.py}
+  builder/    {config.py, model_from_config.py}
+  cli/        {main.py}
+  convert/    {ann2snn.py}              # <— 新增：ANN→SNN 转换
+  core/       {registry.py, spike_tensor.py}
+  ffn/        {pulse_ffn.py}
+  neurons/    {adaptive_threshold.py, lif_sint.py, surrogate.py}
+  train/      {trainer.py}
+tests/
+  test_train.py
+oneclick.py
+setup.py
 ```
 
-## 📜 License
+---
 
-Apache 2.0 – open for both research and commercial use.
+## 🧪 最小训练代码（可直接复制）
+
+```python
+import torch
+from fastsnn.builder.config import SNNConfig
+from fastsnn.builder.model_from_config import build_model_from_config
+from fastsnn.train.trainer import Trainer, TrainConfig
+
+def synthetic_data(num_batches=20, B=2, T=64, V=2000, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    for _ in range(num_batches):
+        yield torch.randint(0, V, (B, T), generator=g)
+
+cfg = SNNConfig(vocab_size=2000, d_model=128, n_heads=4, n_layers=2, d_ff=256, attn_kind='hybrid_alt')
+model = build_model_from_config(cfg)
+trainer = Trainer(model, TrainConfig(max_steps=10, log_every=2, lr=1e-3))
+trainer.fit(synthetic_data())
+```
+
+---
+
+## 🛠 与论文的工程化对齐
+
+- **sINT（训练期）**：`neurons/adaptive_threshold.py` / `neurons/lif_sint.py`  
+  - `V_th` 基于批统计的自适应阈值；`SurrogateSTE` 用 sigmoid 梯度近似整数化。
+- **Linear Attention**：`attention/linear.py`  
+  - 非负核映射 `phi` + 递推 `kv_acc/z_acc`，支持增量解码状态。
+- **Sliding Window Attention (SWA)**：`attention/sliding_window.py`  
+  - 带状因果 mask，窗口大小 `window` 可调。
+- **Hybrid Mix**：`attention/hybrid.py`  
+  - Linear + SWA（可选 Softmax）拼接后线性投影回 `d_model`。
+- **SpikeTensor**：`core/spike_tensor.py`  
+  - 修复了 `to_dense()` 在 `dense` 模式下返回 `Ellipsis` 的问题；增加 `count->dense` 展开。
+
+---
+
+## 📈 路线图
+
+- [ ] 完整 ANN→SNN 图灵完备映射（含 Attention、Norm、Conv 的时序化）
+- [ ] SpikeScope 可视化（放电稀疏度、能耗 proxy、时序分布）
+- [ ] 部署打包：`.snn` 规范、量化（W8A）、KV 缓存低比特化
+- [ ] PyPI 发布与文档站（教程 + API 参考）
+
+---
+
+## 🧩 常见问题
+
+- **Q：没有 GPU 能跑吗？**  
+  A：可以。本最小闭环在 CPU 上即可完成 Smoke Test 与 10 步训练。
+
+- **Q：ANN→SNN 转换为什么这么“简单”？**  
+  A：这是刻意“保守”的**最小可用**实现，目的是确保**一键可跑**；更复杂的脉冲时序/能耗优化会在随后里程碑加入。
+
+---
+
+## License
+
+Apache-2.0

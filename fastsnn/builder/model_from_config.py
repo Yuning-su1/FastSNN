@@ -1,61 +1,51 @@
-from typing import Optional
-import torch
-import torch.nn as nn
 
-from ..attention.linear import LinearAttention
-from ..attention.sliding_window import SlidingWindowAttention
-from ..ffn.pulse_ffn import PulseFFN
+from __future__ import annotations
+import torch, torch.nn as nn
 from .config import SNNConfig
+from fastsnn.attention.linear import LinearAttention
+from fastsnn.attention.sliding_window import SlidingWindowAttention
+from fastsnn.attention.hybrid import HybridMixAttention
+from fastsnn.ffn.pulse_ffn import PulseFFN
 
 class Block(nn.Module):
-    def __init__(self, D: int, H: int, d_ff: int, cfg: SNNConfig, layer_id: int):
+    def __init__(self, cfg: SNNConfig, layer_id: int):
         super().__init__()
-        # choose attention kind
-        kind = cfg.attn_kind
-        if kind == "hybrid_alt":
-            kind = "linear" if (layer_id % 2 == 0) else "sliding"
-        if kind == "linear":
-            self.attn = LinearAttention(D, H, phi=cfg.attn_phi, dropout_p=cfg.dropout_p)
-        elif kind == "sliding":
-            self.attn = SlidingWindowAttention(D, H, window=cfg.sw_window, dropout_p=cfg.dropout_p)
-        else:
-            raise ValueError(f"Unknown attn_kind: {cfg.attn_kind}")
-
+        D, H = cfg.d_model, cfg.n_heads
         self.norm1 = nn.LayerNorm(D)
-        self.ffn = PulseFFN(D, d_ff,
-                            neuron_type=cfg.neuron_type,
-                            tau=cfg.neuron_tau, theta=cfg.neuron_theta,
-                            theta_learnable=cfg.neuron_theta_learnable,
-                            ste_tau=cfg.neuron_ste_tau,
-                            dropout_p=cfg.dropout_p)
         self.norm2 = nn.LayerNorm(D)
+        if cfg.attn_kind == 'linear':
+            self.attn = LinearAttention(D, H, dropout_p=cfg.dropout)
+        elif cfg.attn_kind == 'sliding':
+            self.attn = SlidingWindowAttention(D, H, window=cfg.window, dropout_p=cfg.dropout)
+        elif cfg.attn_kind == 'hybrid_alt':
+            include_softmax = (layer_id % 6 == 0)
+            self.attn = HybridMixAttention(D, H, window=cfg.window, include_softmax=include_softmax, dropout_p=cfg.dropout)
+        else:
+            raise ValueError(cfg.attn_kind)
+        self.ffn  = PulseFFN(D, cfg.d_ff, dropout=cfg.dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B,T,D]
-        h = self.norm1(x)
-        h = self.attn(h)
-        x = x + h
-        h = self.norm2(x)
-        h = self.ffn(h)
-        x = x + h
-        return x
+    def forward(self, x: torch.Tensor, kv_state=None, incremental: bool = False):
+        y, kv_state = self.attn(self.norm1(x), kv_state=kv_state, incremental=incremental) if hasattr(self.attn,'forward') and 'kv_state' in self.attn.forward.__code__.co_varnames else (self.attn(self.norm1(x)), kv_state)
+        x = x + y
+        x = x + self.ffn(self.norm2(x))
+        return x, kv_state
 
 class SNNLanguageModel(nn.Module):
     def __init__(self, cfg: SNNConfig):
         super().__init__()
-        self.cfg = cfg
-        D, H, L = cfg.d_model, cfg.n_heads, cfg.n_layers
+        D = cfg.d_model
         self.tok = nn.Embedding(cfg.vocab_size, D)
-        self.blocks = nn.ModuleList([Block(D, H, cfg.d_ff, cfg, i) for i in range(L)])
+        self.blocks = nn.ModuleList([Block(cfg, i) for i in range(cfg.n_layers)])
         self.ln_f = nn.LayerNorm(D)
         self.head = nn.Linear(D, cfg.vocab_size, bias=False)
         if cfg.tie_lm_head:
             self.head.weight = self.tok.weight
 
-    def forward(self, idx: torch.Tensor) -> torch.Tensor:
+    def forward(self, idx: torch.Tensor):
+        kv = None
         x = self.tok(idx)
-        for blk in self.blocks:
-            x = blk(x)
+        for i,blk in enumerate(self.blocks):
+            x, kv = blk(x, kv_state=kv, incremental=False)
         x = self.ln_f(x)
         return self.head(x)
 
