@@ -53,11 +53,11 @@ class LinearAttention(nn.Module):
         if incremental:
             kt = kf[:, :, -1:, :]  # [B,H,1,D]
             vt = v[:, :, -1:, :]
-            kv_acc = kv_acc + torch.einsum('b h 1 d, b h 1 e -> b h d e', kt, vt)
+            kv_acc = kv_acc + torch.einsum('b h t d, b h t e -> b h d e', kt, vt)
             z_acc  = z_acc  + kt.squeeze(2)
             qt = qf[:, :, -1:, :]
-            num = torch.einsum('b h 1 d, b h d e -> b h 1 e', qt, kv_acc)
-            den = torch.einsum('b h 1 d, b h d -> b h 1', qt, z_acc) + 1e-6
+            num = torch.einsum('b h t d, b h d e -> b h t e', qt, kv_acc)
+            den = torch.einsum('b h t d, b h d -> b h t', qt, z_acc) + 1e-6
             out = num / den.unsqueeze(-1)
             new_state = {'kv_acc': kv_acc, 'z_acc': z_acc}
         else:
@@ -65,11 +65,11 @@ class LinearAttention(nn.Module):
             for t in range(T):
                 kt = kf[:, :, t:t+1, :]
                 vt = v[:, :, t:t+1, :]
-                kv_acc = kv_acc + torch.einsum('b h 1 d, b h 1 e -> b h d e', kt, vt)
+                kv_acc = kv_acc + torch.einsum('b h t d, b h t e -> b h d e', kt, vt)
                 z_acc  = z_acc  + kt.squeeze(2)
                 qt = qf[:, :, t:t+1, :]
-                num = torch.einsum('b h 1 d, b h d e -> b h 1 e', qt, kv_acc)
-                den = torch.einsum('b h 1 d, b h d -> b h 1', qt, z_acc) + 1e-6
+                num = torch.einsum('b h t d, b h d e -> b h t e', qt, kv_acc)
+                den = torch.einsum('b h t d, b h d -> b h t', qt, z_acc) + 1e-6
                 outs.append(num / den.unsqueeze(-1))
             out = torch.cat(outs, dim=2)
             new_state = {'kv_acc': kv_acc, 'z_acc': z_acc}

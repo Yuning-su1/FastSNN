@@ -1,0 +1,8 @@
+torch
+einops
+typer
+transformers
+datasets
+fastapi
+uvicorn
+matplotlib

@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+setup.py
+fastsnn/__init__.py
+fastsnn.egg-info/PKG-INFO
+fastsnn.egg-info/SOURCES.txt
+fastsnn.egg-info/dependency_links.txt
+fastsnn.egg-info/requires.txt
+fastsnn.egg-info/top_level.txt
+tests/test_train.py
