@@ -1,84 +1,149 @@
-# FastSNN — Build • Convert • Run (One‑Click SNN SDK)
+# FastSNN — Build • Convert • Run (One-Click SNN SDK)
 
-> **TL;DR**: `pip install -e .` → `python oneclick.py`  
-> 即刻跑通：**线性/滑窗/混合注意力 SNN 语言模型** + **ANN→SNN 转换 Demo** + **最小训练闭环**。
-
----
-
-## ✨ 核心卖点（真实可跑）
-
-- **一键跑通**：`python oneclick.py` 自动完成前向 Smoke Test、10 步训练、以及 **ANN→SNN** 转换演示。
-- **ANN→SNN 转换（最小可用）**：`fastsnn.convert.ann2snn.convert_ann_to_snn(model)`  
-  将 `ReLU/GELU/SiLU` 替换为**自适应阈值 sINT 神经元**，`Linear` 自动适配 `[B,T,D]`。
-- **三种注意力**：线性（O(T) 状态递推）、滑窗（SWA 局部因果）、混合（Linear+SWA，可选 Softmax）。
-- **SpikeTensor 抽象**：统一 `dense/count/event` 表达；训练期 `count` 代理，推理期可扩展事件驱动。
-- **最小训练器**：`Trainer.fit()`，能在 CPU 上快速验证端到端。
-
-> 与论文对齐点：训练期**单步 sINT**（自适应阈值），推理期**时间展开**；线性注意力以核特征 + 递推状态实现；滑窗注意力使用局部因果掩码；混合注意力在层间/层内组合。
+> **TL;DR**
+>
+> ```bash
+> pip install -e .
+> python oneclick.py
+> ```
+>
+> Runs end-to-end: **Linear / Sliding / Hybrid attention SNN LM**, **ANN→SNN conversion demo**, and a **minimal training loop**.
 
 ---
 
-## 📦 安装
+## Why FastSNN?
+
+* **One-click runnable**: `python oneclick.py` does forward smoke test → 10-step train → ANN→SNN demo.
+* **ANN→SNN conversion (minimal, practical)**: swap `ReLU/GELU/SiLU` with **adaptive-threshold sINT neurons**; auto-wrap `Linear` to accept `[B,T,D]`.
+* **Three attention flavors**:
+
+  * **Linear** — O(T) state-space style with non-negative kernel & accumulators
+  * **Sliding Window (SWA)** — local causal band mask
+  * **Hybrid** — Linear + SWA (optionally Softmax) concatenated then projected
+* **Unified SpikeTensor** abstraction: `dense / count / event` (training uses count proxy; inference can expand to event-driven).
+* **Minimal trainer**: validates the end-to-end chain on CPU quickly.
+
+---
+
+## Design Philosophy (the “Framework”)
+
+1. **Two-step decoupling**
+
+   * **Training**: produce **spike counts (sINT)** in a **single step** via adaptive threshold + STE; optimize efficiently in dense mode.
+   * **Inference**: optionally **expand counts to spike trains** when deploying to event-driven back-ends.
+
+2. **Uniform contracts**
+
+   * All sequence modules speak `[B, T, D]` and return the same shape (plus an optional `state` dict).
+   * Attention modules share `forward(x, kv_state=None, incremental=False) → (y, new_state)`; FFN/neurons are pure `[B,T,D] → [B,T,D]`.
+
+3. **Single source of truth: SpikeTensor**
+
+   * Canonical representation for `dense / count / event` with clear, lossless conversions when possible.
+
+4. **Progressive realism**
+
+   * Start with a **minimal, robust** path (what you have now). Add biological realism / quantization / deployment hooks incrementally without breaking the core API.
+
+5. **Composable registry**
+
+   * A simple `Registry` lets you plug in neurons/blocks/heads uniformly; names become stable public API.
+
+---
+
+## Unified Architecture
+
+```
+                  ┌───────────────────────────────┐
+   Build          │  SNNLanguageModel(cfg)        │
+   (dense)  ───▶  │  Blocks: [Attention + FFN]×N  │  ───▶  Trainer / Inference
+                  └───────────────────────────────┘
+                            ▲           ▲
+                            │           │
+                     Neurons (sINT)   SpikeTensor
+
+Attention options inside each block:
+  • Linear (O(T) accumulators, non-negative φ)
+  • Sliding Window (local causal band mask)
+  • Hybrid (Linear + SWA [+ Softmax]) → concat → projection
+```
+
+**Module contracts**
+
+```python
+# Attention (shared)
+y, state = attn(x, kv_state=None, incremental=False)  # x: [B,T,D], y: [B,T,D]
+
+# FFN (pure)
+y = ffn(x)  # [B,T,D] → [B,T,D]
+
+# Neuron (training-time sINT)
+y = AdaptiveThresholdNeuron(d_model)(x)  # [B,T,D] → [B,T,D] (spike-count proxy)
+```
+
+---
+
+## Install
 
 ```bash
 pip install -e .
 ```
 
-> 依赖：`torch`, `einops`, `pyyaml`（`setup.py` 已声明）
+> Requires: `torch`, `einops`, `pyyaml` (declared in `setup.py`).
 
 ---
 
-## ⚡️ 1 行 ANN→SNN 转换
-
-```python
-from fastsnn.convert.ann2snn import convert_ann_to_snn, TinyANN
-ann = TinyANN(in_dim=128, hidden=256, out_dim=10)
-snn = convert_ann_to_snn(ann, d_model_fallback=128)
-```
-
-- `ReLU/GELU/SiLU` → 自适应阈值 sINT（训练期将时间维度折叠为“放电计数”并用 STE 回传）
-- `Linear` → 自动包装为支持 `[B,T,D]` 的层（时序批展平再还原）
-- 其他模块 → 保持不变（安全回退），便于你逐步扩展
-
-> 温馨提示：这是**最小可用演示**，目的是“先通一遍”。你可以在此基础上替换更复杂的神经元/门控/量化策略。
-
----
-
-## ▶️ 一键跑通
+## One-Click Run
 
 ```bash
 python oneclick.py
 ```
 
-它将依次执行：
-1. **安装**（可跳过）：`pip install -e .`
-2. **前向 Smoke Test**：`python -m fastsnn.cli.main --attn hybrid_alt`
-3. **最小训练**：`python tests/test_train.py`
-4. **ANN→SNN 转换 Demo**：调用 `convert_ann_to_snn` 并打印张量尺寸
+It runs:
+
+1. **(Optional) Install** editable package
+2. **Forward smoke test**
+3. **10-step minimal training**
+4. **ANN→SNN conversion demo** (prints tensor shapes)
 
 ---
 
-## 🧱 目录
+## ANN → SNN Conversion
 
+**Minimal, safe mode**—convert standard MLP activations to sINT neurons while keeping Linear layers:
+
+```python
+from fastsnn.convert.ann2snn import convert_ann_to_snn, TinyANN
+
+ann = TinyANN(in_dim=128, hidden=256, out_dim=10)     # reference ANN
+snn = convert_ann_to_snn(ann, d_model_fallback=128)   # SNN-wrapped variant
 ```
-fastsnn/
-  attention/  {linear.py, sliding_window.py, hybrid.py}
-  builder/    {config.py, model_from_config.py}
-  cli/        {main.py}
-  convert/    {ann2snn.py}              # <— 新增：ANN→SNN 转换
-  core/       {registry.py, spike_tensor.py}
-  ffn/        {pulse_ffn.py}
-  neurons/    {adaptive_threshold.py, lif_sint.py, surrogate.py}
-  train/      {trainer.py}
-tests/
-  test_train.py
-oneclick.py
-setup.py
-```
+
+* `ReLU/GELU/SiLU` → **AdaptiveThreshold** (training-time sINT via STE, time collapsed)
+* `Linear` → wrapped to accept `[B,T,D]` (flatten T, run, restore)
+* Unknown layers → left intact (conservative fallback)
+
+> This is intentionally **minimal** to guarantee a **working path first**. You can later upgrade to faithful attention/normalization conversions, event-level simulators, and quantized deployment.
 
 ---
 
-## 🧪 最小训练代码（可直接复制）
+## Quick Model Build
+
+```python
+import torch
+from fastsnn.builder.config import SNNConfig
+from fastsnn.builder.model_from_config import build_model_from_config
+
+cfg = SNNConfig(
+    vocab_size=5000, d_model=128, n_heads=4, n_layers=2, d_ff=256,
+    attn_kind='hybrid_alt', window=128, dropout=0.0
+)
+model = build_model_from_config(cfg)      # nn.Module
+x = torch.randint(0, cfg.vocab_size, (2, 64))   # [B,T]
+logits = model(x[:, :-1])                        # LM next-token logits
+```
+
+## Minimal Training (CPU-friendly)
 
 ```python
 import torch
@@ -97,42 +162,62 @@ trainer = Trainer(model, TrainConfig(max_steps=10, log_every=2, lr=1e-3))
 trainer.fit(synthetic_data())
 ```
 
----
+## What’s Inside
 
-## 🛠 与论文的工程化对齐
+```
+fastsnn/
+  attention/  {linear.py, sliding_window.py, hybrid.py}
+  builder/    {config.py, model_from_config.py}
+  cli/        {main.py}
+  convert/    {ann2snn.py}          # ANN→SNN (minimal, practical)
+  core/       {registry.py, spike_tensor.py}
+  ffn/        {pulse_ffn.py}
+  neurons/    {adaptive_threshold.py, lif_sint.py, surrogate.py}
+  train/      {trainer.py}
+tests/
+  test_train.py
+oneclick.py
+setup.py
+```
 
-- **sINT（训练期）**：`neurons/adaptive_threshold.py` / `neurons/lif_sint.py`  
-  - `V_th` 基于批统计的自适应阈值；`SurrogateSTE` 用 sigmoid 梯度近似整数化。
-- **Linear Attention**：`attention/linear.py`  
-  - 非负核映射 `phi` + 递推 `kv_acc/z_acc`，支持增量解码状态。
-- **Sliding Window Attention (SWA)**：`attention/sliding_window.py`  
-  - 带状因果 mask，窗口大小 `window` 可调。
-- **Hybrid Mix**：`attention/hybrid.py`  
-  - Linear + SWA（可选 Softmax）拼接后线性投影回 `d_model`。
-- **SpikeTensor**：`core/spike_tensor.py`  
-  - 修复了 `to_dense()` 在 `dense` 模式下返回 `Ellipsis` 的问题；增加 `count->dense` 展开。
 
----
+## Implementation Notes
 
-## 📈 路线图
+* **Adaptive-threshold sINT** (`neurons/adaptive_threshold.py`):
+  computes a dynamic threshold (batch/feature statistics), uses **STE** to round to counts; returns `[B,T,D]` spike counts during training.
 
-- [ ] 完整 ANN→SNN 图灵完备映射（含 Attention、Norm、Conv 的时序化）
-- [ ] SpikeScope 可视化（放电稀疏度、能耗 proxy、时序分布）
-- [ ] 部署打包：`.snn` 规范、量化（W8A）、KV 缓存低比特化
-- [ ] PyPI 发布与文档站（教程 + API 参考）
+* **Linear Attention** (`attention/linear.py`):
+  non-negative feature map `φ(·)`, recurrent accumulators `(kv_acc, z_acc)`, supports `incremental=True` decoding.
+  *Dev tip:* if you ever use `einsum`, **never** write numeric dimensions (use letters, even when the size is 1).
 
----
+* **Sliding Window Attention** (`attention/sliding_window.py`):
+  causal band mask around the diagonal; window `w` trades compute for range.
 
-## 🧩 常见问题
+* **Hybrid** (`attention/hybrid.py`):
+  concatenate outputs of Linear + SWA (optionally Softmax), then project back to `d_model`.
 
-- **Q：没有 GPU 能跑吗？**  
-  A：可以。本最小闭环在 CPU 上即可完成 Smoke Test 与 10 步训练。
+* **SpikeTensor** (`core/spike_tensor.py`):
+  fixed `to_dense()` in `dense` mode (no more `Ellipsis`), added robust `count→dense` expansion.
 
-- **Q：ANN→SNN 转换为什么这么“简单”？**  
-  A：这是刻意“保守”的**最小可用**实现，目的是确保**一键可跑**；更复杂的脉冲时序/能耗优化会在随后里程碑加入。
 
----
+
+## Roadmap
+
+* Faithful ANN→SNN mapping for Attention / Norm / Conv
+* SpikeScope visualization (sparsity, energy proxy, spike stats)
+* Deployment packaging: `.snn` format, W8A weight + low-bit KV, event simulators
+* PyPI release and docs site
+
+
+## FAQ
+
+* **Does this run without GPU?**
+  Yes. Everything here is CPU-friendly for the smoke test and short training.
+
+* **Why is conversion minimal?**
+  To guarantee a working end-to-end path. You can replace the neuron, gating, or quantization strategies later without breaking the public contract.
 
 ## License
 
 Apache-2.0
+
