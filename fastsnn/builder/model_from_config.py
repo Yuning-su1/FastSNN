@@ -1,43 +1,63 @@
-import torch, torch.nn as nn
-from fastsnn.attention.linear import LinearAttention
-from fastsnn.ffn.pulse_ffn import PulseFFN
+from typing import Optional
+import torch
+import torch.nn as nn
+
+from ..attention.linear import LinearAttention
+from ..attention.sliding_window import SlidingWindowAttention
+from ..ffn.pulse_ffn import PulseFFN
+from .config import SNNConfig
 
 class Block(nn.Module):
-    def __init__(self, D, H, d_ff, attn_cfg, neuron_cfg, layer_id=0):
+    def __init__(self, D: int, H: int, d_ff: int, cfg: SNNConfig, layer_id: int):
         super().__init__()
-        kind = attn_cfg["kind"]
+        # choose attention kind
+        kind = cfg.attn_kind
         if kind == "hybrid_alt":
-            # 交替：奇数层 linear，偶数层 swa
             kind = "linear" if (layer_id % 2 == 0) else "sliding"
-
         if kind == "linear":
-            self.attn = LinearAttention(D, H, phi_kind=attn_cfg["phi"])
+            self.attn = LinearAttention(D, H, phi=cfg.attn_phi, dropout_p=cfg.dropout_p)
         elif kind == "sliding":
-            self.attn = SlidingWindowAttention(D, H, window=attn_cfg["sw_window"])
+            self.attn = SlidingWindowAttention(D, H, window=cfg.sw_window, dropout_p=cfg.dropout_p)
         else:
-            raise ValueError(f"Unknown attention kind: {kind}")
+            raise ValueError(f"Unknown attn_kind: {cfg.attn_kind}")
 
-        self.ln1  = nn.LayerNorm(D)
-        self.ffn  = PulseFFN(D, d_ff, neuron_cfg)
-        self.ln2  = nn.LayerNorm(D)
+        self.norm1 = nn.LayerNorm(D)
+        self.ffn = PulseFFN(D, d_ff,
+                            neuron_type=cfg.neuron_type,
+                            tau=cfg.neuron_tau, theta=cfg.neuron_theta,
+                            theta_learnable=cfg.neuron_theta_learnable,
+                            ste_tau=cfg.neuron_ste_tau,
+                            dropout_p=cfg.dropout_p)
+        self.norm2 = nn.LayerNorm(D)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.ffn(self.ln2(x))
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B,T,D]
+        h = self.norm1(x)
+        h = self.attn(h)
+        x = x + h
+        h = self.norm2(x)
+        h = self.ffn(h)
+        x = x + h
         return x
 
-class TinySNNLM(nn.Module):
-    def __init__(self, cfg, vocab_size=50257):
+class SNNLanguageModel(nn.Module):
+    def __init__(self, cfg: SNNConfig):
         super().__init__()
-        D, H, L, dff = cfg["d_model"], cfg["n_heads"], cfg["n_layers"], cfg["d_ff"]
-        self.tok = nn.Embedding(vocab_size, D)
-        self.blocks = nn.ModuleList([Block(D,H,dff,cfg["attn"],cfg["neuron"]) for _ in range(L)])
+        self.cfg = cfg
+        D, H, L = cfg.d_model, cfg.n_heads, cfg.n_layers
+        self.tok = nn.Embedding(cfg.vocab_size, D)
+        self.blocks = nn.ModuleList([Block(D, H, cfg.d_ff, cfg, i) for i in range(L)])
         self.ln_f = nn.LayerNorm(D)
-        self.head = nn.Linear(D, vocab_size, bias=False)
-    def forward(self, idx):
-        # idx: [B,T]
+        self.head = nn.Linear(D, cfg.vocab_size, bias=False)
+        if cfg.tie_lm_head:
+            self.head.weight = self.tok.weight
+
+    def forward(self, idx: torch.Tensor) -> torch.Tensor:
         x = self.tok(idx)
         for blk in self.blocks:
             x = blk(x)
         x = self.ln_f(x)
         return self.head(x)
+
+def build_model_from_config(cfg: SNNConfig) -> nn.Module:
+    return SNNLanguageModel(cfg)

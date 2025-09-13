@@ -1,36 +1,79 @@
-import torch, torch.nn as nn, torch.nn.functional as F
+# attention/sliding_window.py
+from __future__ import annotations
+import math
+from typing import Optional, Tuple
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 
+def _build_band_mask(T: int, window: int, device, dtype) -> torch.Tensor:
+    """
+    Build an additive attention mask for causal sliding window.
+    Allowed: keys in [t-window, t], Disallowed: -inf.
+    Returns shape [T, T] to be broadcast to [B*H, T, T].
+    """
+    # base causal mask: allow i >= j
+    idx = torch.arange(T, device=device)
+    causal = (idx[:, None] >= idx[None, :])  # [T,T]
+    if window is not None and window > 0:
+        band = (idx[:, None] - idx[None, :]) <= window
+        allowed = causal & band
+    else:
+        allowed = causal
+    mask = torch.zeros(T, T, device=device, dtype=dtype)
+    mask = mask.masked_fill(~allowed, float("-inf"))
+    return mask
+
 class SlidingWindowAttention(nn.Module):
-    def __init__(self, d_model, n_heads, window=128):
+    """
+    Causal sliding-window attention using PyTorch SDPA.
+    Efficient banded mask construction; avoids Python loops in T.
+    Shapes:
+      x: [B, T, D]  → out: [B, T, D]
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        window: int = 128,
+        dropout_p: float = 0.0,
+        bias: bool = False,
+    ):
         super().__init__()
-        self.h = n_heads
-        self.dk = d_model // n_heads
-        self.Wq = nn.Linear(d_model, d_model, bias=False)
-        self.Wk = nn.Linear(d_model, d_model, bias=False)
-        self.Wv = nn.Linear(d_model, d_model, bias=False)
-        self.Wo = nn.Linear(d_model, d_model, bias=False)
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_head = d_model // n_heads
         self.window = window
+        self.q_proj = nn.Linear(d_model, d_model, bias=bias)
+        self.k_proj = nn.Linear(d_model, d_model, bias=bias)
+        self.v_proj = nn.Linear(d_model, d_model, bias=bias)
+        self.out_proj = nn.Linear(d_model, d_model, bias=bias)
+        self.dropout_p = dropout_p
 
-    def forward(self, x):
-        # x: [B,T,D]
-        B,T,D = x.shape
-        q = rearrange(self.Wq(x), "b t (h d) -> b h t d", h=self.h)
-        k = rearrange(self.Wk(x), "b t (h d) -> b h t d", h=self.h)
-        v = rearrange(self.Wv(x), "b t (h d) -> b h t d", h=self.h)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, D = x.shape
+        device, dtype = x.device, x.dtype
 
-        # 局部窗口注意力：对每个 t，只看 [t-w, t]
-        w = self.window
-        attn_out = torch.empty_like(q)
-        for t in range(T):
-            s = max(0, t - w)
-            q_t = q[:, :, t:t+1, :]               # [B,H,1,d]
-            k_sw = k[:, :, s:t+1, :]              # [B,H,L,d]
-            v_sw = v[:, :, s:t+1, :]
-            scores = torch.einsum("b h 1 d, b h L d -> b h 1 L", q_t, k_sw) / (self.dk ** 0.5)
-            probs = scores.softmax(dim=-1)
-            out = torch.einsum("b h 1 L, b h L d -> b h 1 d", probs, v_sw)
-            attn_out[:, :, t:t+1, :] = out
+        q = rearrange(self.q_proj(x), "b t (h d) -> b h t d", h=self.n_heads)
+        k = rearrange(self.k_proj(x), "b t (h d) -> b h t d", h=self.n_heads)
+        v = rearrange(self.v_proj(x), "b t (h d) -> b h t d", h=self.n_heads)
 
-        out = rearrange(attn_out, "b h t d -> b t (h d)")
-        return self.Wo(out)
+        # merge batch & head for SDPA
+        q = rearrange(q, "b h t d -> (b h) t d", b=B, h=self.n_heads)
+        k = rearrange(k, "b h t d -> (b h) t d", b=B, h=self.n_heads)
+        v = rearrange(v, "b h t d -> (b h) t d", b=B, h=self.n_heads)
+
+        # additive mask [T,T]
+        mask = _build_band_mask(T, self.window, device, q.dtype)
+
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=mask,       # additive mask; -inf blocks
+            dropout_p=self.dropout_p if self.training else 0.0,
+            is_causal=False,      # causal is already encoded in mask
+        )
+        out = rearrange(out, "(b h) t d -> b t (h d)", b=B, h=self.n_heads)
+        return self.out_proj(out)

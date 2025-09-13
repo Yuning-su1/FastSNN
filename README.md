@@ -1,78 +1,63 @@
 # FastSNN
 
-FastSNN is a developer-friendly SDK for building, training, and deploying Spiking Neural Networks (SNNs).  
-Inspired by the algorithms introduced in BICLab’s *SpikingBrain*, FastSNN makes SNN research and applications accessible with concise APIs and standardized tooling.
+FastSNN is a developer-friendly SDK for building, training, and deploying **Spiking Neural Network (SNN) models**.  
+Inspired by the algorithms introduced by BICLab’s *SpikingBrain* project, FastSNN provides a simple, consistent interface—bringing SNN development closer to the usability of mainstream deep learning frameworks.
 
 ## ✨ Key Features
+- **One-line SNN building and training**  
+  Create, train, or convert from ANN to SNN with concise APIs or CLI commands.
 
-- **Unified SNN File Format**  
-  A `.snn` bundle (config + weights + meta + reports) for easy cross-platform deployment and model sharing.
+- **Unified SNN file format (.snn)**  
+  Standardized model packaging for cross-platform deployment and long-term storage.
 
-- **Five Core APIs**  
-  `build()`, `fit()`, `extend_context()`, `export()`, `serve()` cover the full development lifecycle.
+- **End-to-end workflow coverage**  
+  From model definition, training, context extension, evaluation, to deployment—all in one toolkit.
 
-- **SpikeTensor Abstraction**  
-  A unified representation of spikes (dense, sparse, or integer-count), ensuring ANN-style interfaces while preserving SNN semantics.
+- **SpikeTensor abstraction**  
+  A core data structure unifying dense activations, spike counts (sINT), and event-based streams.  
+  Built on the `Coder → NeuronCell` pipeline, it ensures ANN-like interfaces while retaining SNN semantics.
 
-- **Coder → NeuronCell Chain**  
-  Input encoding, neuron dynamics, and layer composition follow a clean bottom-up hierarchy.
+- **SpikeScope visualization**  
+  A built-in tool for raster plots, sparsity curves, membrane potential traces, and throughput profiling.  
+  Designed to make SNN evaluation interpretable and reproducible.
 
-- **SpikeScope Visualization**  
-  Built-in tools to inspect raster plots, firing rates, sparsity heatmaps, and memory/throughput scaling, making SNN behavior interpretable.
-
-## 🚀 Quickstart
-
+## 🚀 Quick Example
 ```python
 from fastsnn import FastSNN
 
-# 1. Build a model
-model = FastSNN.build(arch="snn-tiny", attn="hybrid_alt", neuron="lif_sint")
+# Build a tiny SNN model
+model = FastSNN.build(arch="snn-tiny", d_model=256, n_layers=4, n_heads=4)
 
-# 2. Train with HuggingFace datasets
-trainer = FastSNN.fit(model, dataset="wikitext/wikitext-2-raw-v1", seq_len=2048)
+# Train on WikiText
+trainer = FastSNN.fit(model, dataset="wikitext/wikitext-2-raw-v1", seq_len=2048, max_steps=1000)
 
-# 3. Extend context length (2k → 8k tokens)
+# Extend context length (2k → 8k)
 FastSNN.extend_context(model, trainer, new_seq_len=8192)
 
-# 4. Visualize spikes and sparsity
-FastSNN.scope(model).report("runs/exp_demo")
+# Generate visualization report
+FastSNN.scope(model).report("runs/exp1")
 
-# 5. Export and serve
+# Export and serve
 FastSNN.export(model, "artifacts/my_model.snn")
 FastSNN.serve("artifacts/my_model.snn", port=8000)
 ````
 
-## 🧩 Philosophy
-
-FastSNN is built on three unified abstractions:
-
-1. **SpikeTensor** – the universal spike container
-2. **Coder** – input/output transformation into spikes
-3. **NeuronCell** – minimal computational unit for spike dynamics
-
-This ensures developers can use SNNs with the same ease as ANN frameworks, while still benefiting from event-driven sparsity and long-sequence efficiency.
-
-## 📊 SpikeScope
-
-Visual diagnostics are first-class citizens in FastSNN:
-
-* Spike raster plots
-* Membrane potential traces
-* Sparsity and firing-rate curves
-* Memory/throughput scaling vs. sequence length
-
-## 📦 Standardized Bundles
-
-A FastSNN `.snn` model bundle contains:
+## 📂 File Structure
 
 ```
-model.snn/
-  config.json      # model & training config
-  weights.safetensors
-  meta.json        # tokenizer, training milestones
-  spike.report/    # visual & numerical diagnostics
+fastsnn/
+  core/         # Shared abstractions (SpikeTensor, Config, Registry)
+  neurons/      # LIF-sINT, AdEx-sINT, surrogate gradients
+  attention/    # Linear, Sliding Window, Hybrid
+  ffn/          # Pulse FFN, MoE FFN
+  builder/      # Model constructors, ANN→SNN converters
+  trainer/      # Training loop, context extension, schedulers
+  data/         # Dataset adapters, coders, streamers
+  scope/        # SpikeScope visualization utilities
+  deploy/       # Export, .snn bundling, REST serving
+  cli/          # FastSNN CLI entrypoints
 ```
 
 ## 📜 License
 
-Apache 2.0
+Apache 2.0 – open for both research and commercial use.
