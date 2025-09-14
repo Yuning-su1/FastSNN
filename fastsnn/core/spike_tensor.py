@@ -42,3 +42,42 @@ class SpikeTensor:
         if self.mode == 'event':
             raise NotImplementedError('event->count not implemented')
         raise ValueError(f'Unknown mode {self.mode}')
+
+def to_dense_if_spike(x):
+    # If x is SpikeTensor -> convert to dense float; else return as-is
+    try:
+        from .spike_tensor import SpikeTensor  # avoid circular import at module top
+    except Exception:
+        SpikeTensor = None
+    if SpikeTensor is not None and isinstance(x, SpikeTensor):
+        return x.to_dense()
+    return x
+
+def to_count_if_spike(x):
+    # If x is SpikeTensor -> convert to count proxy; else return as-is
+    try:
+        from .spike_tensor import SpikeTensor
+    except Exception:
+        SpikeTensor = None
+    if SpikeTensor is not None and isinstance(x, SpikeTensor):
+        return x.to_count()
+    return x
+
+def wrap_like_input(y, x_like, kind="count"):
+    """
+    Wrap raw tensor y back to SpikeTensor if input was SpikeTensor.
+    kind: 'count' for training proxy; 'event' can be used at inference later.
+    """
+    try:
+        from .spike_tensor import SpikeTensor
+    except Exception:
+        SpikeTensor = None
+    if SpikeTensor is not None and isinstance(x_like, SpikeTensor):
+        if kind == "count":
+            return SpikeTensor.from_count(y)
+        elif kind == "dense":
+            return SpikeTensor.from_dense(y)
+        else:
+            # keep count as default minimal
+            return SpikeTensor.from_count(y)
+    return y

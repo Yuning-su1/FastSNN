@@ -4,6 +4,7 @@ from typing import Optional, Dict, Tuple
 import torch, torch.nn as nn
 from .linear import LinearAttention
 from .sliding_window import SlidingWindowAttention
+from fastsnn.core.spike_tensor import to_count_if_spike, wrap_like_input
 
 class SoftmaxAttention(nn.Module):
     def __init__(self, d_model: int, n_heads: int, dropout_p: float = 0.0, bias: bool = False):
@@ -36,10 +37,15 @@ class HybridMixAttention(nn.Module):
         self.softmax = SoftmaxAttention(d_model, n_heads, dropout_p=dropout_p) if include_softmax else None
         self.out_proj = nn.Linear(d_model* (2 + (1 if include_softmax else 0)) , d_model)
     def forward(self, x: torch.Tensor, kv_state: Optional[Dict[str,torch.Tensor]] = None, incremental: bool = False) -> Tuple[torch.Tensor, Dict[str,torch.Tensor]]:
+        x_in = x
+        x = to_count_if_spike(x)  # 训练期用 count 代理；若不是 SpikeTensor 返回原张量
+
         out_lin, state = self.linear(x, kv_state=kv_state, incremental=incremental)
         out_swa = self.sliding(x)
         outs = [out_lin, out_swa]
         if self.softmax is not None:
             outs.append(self.softmax(x))
         y = torch.cat(outs, dim=-1)
-        return self.out_proj(y), state
+        out = wrap_like_input(out, x_in, kind="count")  # 若输入是 SpikeTensor，就包回 SpikeTensor(count)
+        return out, state
+

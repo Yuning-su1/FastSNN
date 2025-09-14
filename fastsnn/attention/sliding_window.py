@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 import torch, torch.nn as nn, torch.nn.functional as F
 from einops import rearrange
+from fastsnn.core.spike_tensor import to_count_if_spike, wrap_like_input
 
 def _band_mask(T: int, window: int, device, dtype) -> torch.Tensor:
     idx = torch.arange(T, device=device)
@@ -28,6 +29,9 @@ class SlidingWindowAttention(nn.Module):
         self.dropout_p = float(dropout_p)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x_in = x
+        x = to_count_if_spike(x)  
+
         B, T, D = x.size()
         q = rearrange(self.q_proj(x), 'b t (h d) -> (b h) t d', h=self.n_heads)
         k = rearrange(self.k_proj(x), 'b t (h d) -> (b h) t d', h=self.n_heads)
@@ -35,4 +39,6 @@ class SlidingWindowAttention(nn.Module):
         mask = _band_mask(T, self.window, x.device, q.dtype)
         out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout_p if self.training else 0.0, is_causal=False)
         out = rearrange(out, '(b h) t d -> b t (h d)', h=self.n_heads, b=B)
-        return self.out_proj(out)
+        out = wrap_like_input(out, x_in, kind="count")  
+        return out
+

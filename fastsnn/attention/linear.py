@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional, Literal, Dict, Tuple
 import torch, torch.nn as nn
 from einops import rearrange
+from fastsnn.core.spike_tensor import to_count_if_spike, wrap_like_input
 
 PhiKind = Literal['softplus','relu','exp']
 
@@ -34,6 +35,8 @@ class LinearAttention(nn.Module):
         self.phi = phi
 
     def forward(self, x: torch.Tensor, kv_state: Optional[Dict[str,torch.Tensor]] = None, incremental: bool = False) -> Tuple[torch.Tensor, Dict[str,torch.Tensor]]:
+        x_in = x
+        x = to_count_if_spike(x)
         B, T, D = x.size()
         q = rearrange(self.q_proj(x), 'b t (h d) -> b h t d', h=self.n_heads)
         k = rearrange(self.k_proj(x), 'b t (h d) -> b h t d', h=self.n_heads)
@@ -74,5 +77,6 @@ class LinearAttention(nn.Module):
             out = torch.cat(outs, dim=2)
             new_state = {'kv_acc': kv_acc, 'z_acc': z_acc}
 
-        out = rearrange(out, 'b h t d -> b t (h d)')
-        return self.out_proj(self.dropout(out)), new_state
+        out = wrap_like_input(out, x_in, kind="count")  
+        return out, new_state
+
