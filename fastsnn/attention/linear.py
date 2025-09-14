@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from typing import Optional, Literal, Dict, Tuple
 import torch, torch.nn as nn
@@ -20,7 +19,8 @@ class LinearAttention(nn.Module):
     """Gated Linear Attention (state-space style) with O(T) complexity.
     Returns (out, state) where state holds accumulators for incremental decoding.
     """
-    def __init__(self, d_model: int, n_heads: int, phi: PhiKind = 'softplus', dropout_p: float = 0.0, bias: bool = False):
+    def __init__(self, d_model: int, n_heads: int, phi: PhiKind = 'softplus',
+                 dropout_p: float = 0.0, bias: bool = False):
         super().__init__()
         assert d_model % n_heads == 0
         self.d_model = d_model
@@ -29,54 +29,64 @@ class LinearAttention(nn.Module):
         self.q_proj = nn.Linear(d_model, d_model, bias=bias)
         self.k_proj = nn.Linear(d_model, d_model, bias=bias)
         self.v_proj = nn.Linear(d_model, d_model, bias=bias)
-        self.out_proj = nn.Linear(d_model, d_model, bias=bias)
+        self.out_proj = nn.Linear(d_model, d_model, bias=bias)   # <- 用它
         self.gate = nn.Linear(d_model, d_model, bias=True)
         self.dropout = nn.Dropout(dropout_p)
         self.phi = phi
 
-    def forward(self, x: torch.Tensor, kv_state: Optional[Dict[str,torch.Tensor]] = None, incremental: bool = False) -> Tuple[torch.Tensor, Dict[str,torch.Tensor]]:
+    def forward(self, x: torch.Tensor,
+                kv_state: Optional[Dict[str,torch.Tensor]] = None,
+                incremental: bool = False) -> Tuple[torch.Tensor, Dict[str,torch.Tensor]]:
         x_in = x
         x = to_count_if_spike(x)
+
         B, T, D = x.size()
         q = rearrange(self.q_proj(x), 'b t (h d) -> b h t d', h=self.n_heads)
         k = rearrange(self.k_proj(x), 'b t (h d) -> b h t d', h=self.n_heads)
         v = rearrange(self.v_proj(x), 'b t (h d) -> b h t d', h=self.n_heads)
         g = rearrange(torch.sigmoid(self.gate(x)), 'b t (h d) -> b h t d', h=self.n_heads)
 
-        qf = _phi(q, self.phi) * (g + 1e-6)  # gating ensures stability
+        qf = _phi(q, self.phi) * (g + 1e-6)  # gated feature
         kf = _phi(k, self.phi)
 
         if incremental and kv_state is not None:
-            kv_acc = kv_state['kv_acc']  # [B,H,D,D]
-            z_acc  = kv_state['z_acc']   # [B,H,D]
+            kv_acc = kv_state['kv_acc']  # [B,H,D_head,D_head]
+            z_acc  = kv_state['z_acc']   # [B,H,D_head]
         else:
-            kv_acc = torch.zeros(B, self.n_heads, self.d_head, self.d_head, device=x.device, dtype=x.dtype)
-            z_acc  = torch.zeros(B, self.n_heads, self.d_head, device=x.device, dtype=x.dtype)
+            kv_acc = torch.zeros(B, self.n_heads, self.d_head, self.d_head,
+                                 device=x.device, dtype=x.dtype)
+            z_acc  = torch.zeros(B, self.n_heads, self.d_head,
+                                 device=x.device, dtype=x.dtype)
 
         if incremental:
-            kt = kf[:, :, -1:, :]  # [B,H,1,D]
-            vt = v[:, :, -1:, :]
+            # time step = 1
+            kt = kf[:, :, -1:, :]               # [B,H,1,Dh]
+            vt = v[:,  :, -1:, :]
             kv_acc = kv_acc + torch.einsum('b h t d, b h t e -> b h d e', kt, vt)
-            z_acc  = z_acc  + kt.squeeze(2)
+            z_acc  = z_acc  + kt.squeeze(2)     # [B,H,Dh]
             qt = qf[:, :, -1:, :]
-            num = torch.einsum('b h t d, b h d e -> b h t e', qt, kv_acc)
-            den = torch.einsum('b h t d, b h d -> b h t', qt, z_acc) + 1e-6
-            out = num / den.unsqueeze(-1)
-            new_state = {'kv_acc': kv_acc, 'z_acc': z_acc}
+            numer = torch.einsum('b h t d, b h d e -> b h t e', qt, kv_acc)   # [B,H,1,Dh]
+            denom = torch.einsum('b h t d, b h d   -> b h t',   qt, z_acc) + 1e-6  # [B,H,1]
+            out_h = numer / denom.unsqueeze(-1)  # [B,H,1,Dh]
+            # 合头 & out_proj → [B,1,D_model]
+            out = rearrange(out_h, 'b h t d -> b t (h d)')
+            out = self.out_proj(out)
         else:
-            outs = []
+            # full sequence
+            outs_h = []
             for t in range(T):
                 kt = kf[:, :, t:t+1, :]
-                vt = v[:, :, t:t+1, :]
+                vt = v[:,  :, t:t+1, :]
                 kv_acc = kv_acc + torch.einsum('b h t d, b h t e -> b h d e', kt, vt)
                 z_acc  = z_acc  + kt.squeeze(2)
                 qt = qf[:, :, t:t+1, :]
-                num = torch.einsum('b h t d, b h d e -> b h t e', qt, kv_acc)
-                den = torch.einsum('b h t d, b h d -> b h t', qt, z_acc) + 1e-6
-                outs.append(num / den.unsqueeze(-1))
-            out = torch.cat(outs, dim=2)
-            new_state = {'kv_acc': kv_acc, 'z_acc': z_acc}
+                numer = torch.einsum('b h t d, b h d e -> b h t e', qt, kv_acc)   # [B,H,1,Dh]
+                denom = torch.einsum('b h t d, b h d   -> b h t',   qt, z_acc) + 1e-6
+                outs_h.append(numer / denom.unsqueeze(-1))
+            out_h = torch.cat(outs_h, dim=2)     # [B,H,T,Dh]
+            out = rearrange(out_h, 'b h t d -> b t (h d)')  # [B,T,H*Dh] = [B,T,D_model]
+            out = self.out_proj(out)
 
-        out = wrap_like_input(out, x_in, kind="count")  
+        new_state = {'kv_acc': kv_acc, 'z_acc': z_acc}
+        out = wrap_like_input(out, x_in, kind="count")
         return out, new_state
-

@@ -6,7 +6,7 @@ from fastsnn.attention.linear import LinearAttention
 from fastsnn.attention.sliding_window import SlidingWindowAttention
 from fastsnn.attention.hybrid import HybridMixAttention
 from fastsnn.ffn.pulse_ffn import PulseFFN
-
+from fastsnn.core.spike_tensor import to_count_if_spike, wrap_like_input
 class Block(nn.Module):
     def __init__(self, cfg: SNNConfig, layer_id: int):
         super().__init__()
@@ -24,10 +24,13 @@ class Block(nn.Module):
             raise ValueError(cfg.attn_kind)
         self.ffn  = PulseFFN(D, cfg.d_ff, dropout=cfg.dropout)
 
-    def forward(self, x: torch.Tensor, kv_state=None, incremental: bool = False):
-        y, kv_state = self.attn(self.norm1(x), kv_state=kv_state, incremental=incremental) if hasattr(self.attn,'forward') and 'kv_state' in self.attn.forward.__code__.co_varnames else (self.attn(self.norm1(x)), kv_state)
-        x = x + y
-        x = x + self.ffn(self.norm2(x))
+    def forward(self, x, kv_state=None, incremental=False):
+        x_in = x
+        y, kv_state = self.attn(self.norm1(x), kv_state=kv_state, incremental=incremental)
+        x = to_count_if_spike(x) + to_count_if_spike(y)  
+        y = self.ffn(self.norm2(x))
+        x = x + to_count_if_spike(y)
+        x = wrap_like_input(x, x_in, kind="count")
         return x, kv_state
 
 class SNNLanguageModel(nn.Module):
