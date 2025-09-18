@@ -142,7 +142,7 @@ def convert_ann_to_snn(module: nn.Module, d_model_fallback: int = 128) -> nn.Mod
     # Leaf module with no children and not recognized: keep original (safe fallback)
     return module
 
-# --------- Toy ANN & demo ----------
+# --------- Toy ANN demo ----------
 class TinyANN(nn.Module):
     """Toy ANN (MLP) to demonstrate conversion."""
     def __init__(self, in_dim=128, hidden=256, out_dim=10):
